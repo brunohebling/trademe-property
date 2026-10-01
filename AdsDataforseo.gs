@@ -29,10 +29,11 @@
  * the rows the script would write. Writes nothing.
  *
  * HOW TO USE
- *   Test:     outputSheets = DFS tabs (default). Run startAdsDfsPriorityNow() (100 keywords) or
- *             startAdsDfsFullNow(), then compareAdsParityPriority() / compareAdsParity().
- *   Go live:  set both jobs' outputSheets to the Zen tab names, run removeLegacyZenserpTriggers(),
- *             then setupAdsDfsSchedule().
+ *   LIVE (current): both jobs' outputSheets = the Zen tabs, so Combined Data reads these results.
+ *     One-off setup: stopAdsDfsAutomation(), removeLegacyZenserpTriggers(), setupAdsDfsSchedule().
+ *     After that both jobs run by themselves; the hourly watchdog continues a stalled run.
+ *   Test without touching live data: set outputSheets to the DFS tabs, run startAdsDfsPriorityNow()
+ *     (100 keywords) or startAdsDfsFullNow(), then compareAdsParityPriority() / compareAdsParity().
  *
  * CREDENTIALS: Script Properties DFS_LOGIN / DFS_PASSWORD if set, otherwise config.
  */
@@ -48,8 +49,8 @@ var ADS_DFS = {
       hours        : [1],         // 1am (script time zone)
       batchSize    : 75,          // 3 groups of 25 per step
       parallelRequests: 25,       // ~2,000 keywords need this to finish in ~4-5 hours
-      // Test: DFS tabs. Go live: 'AdsResultsZenMobile' / 'AdsResultsZenDesktop'
-      outputSheets : { mobile: 'AdsResultsDFSMobile', desktop: 'AdsResultsDFSDesktop' }
+      // LIVE: Combined Data reads these tabs. For a test run use 'AdsResultsDFSMobile' / 'AdsResultsDFSDesktop'
+      outputSheets : { mobile: 'AdsResultsZenMobile', desktop: 'AdsResultsZenDesktop' }
     },
     priority: {
       label        : 'High-priority run',
@@ -58,8 +59,8 @@ var ADS_DFS = {
       hours        : [12, 20],    // 12pm and 8pm (script time zone)
       batchSize    : 25,
       parallelRequests: 5,        // 25 + 5 stays within DataForSEO's 30 simultaneous calls
-      // Test: DFS tabs. Go live: 'AdsResultsZenMobile_HighPriority' / 'AdsResultsZenDesktop_HighPriority'
-      outputSheets : { mobile: 'AdsResultsDFSMobile_HighPriority', desktop: 'AdsResultsDFSDesktop_HighPriority' }
+      // LIVE: Combined Data reads these tabs first. For a test run use the 'AdsResultsDFS..._HighPriority' tabs
+      outputSheets : { mobile: 'AdsResultsZenMobile_HighPriority', desktop: 'AdsResultsZenDesktop_HighPriority' }
     }
   },
 
@@ -155,13 +156,16 @@ function removeLegacyZenserpTriggers() {
                 'getZenserpAdsMobile', 'getZenserpAdsDesktop'];
   var deleted = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (legacy.indexOf(t.getHandlerFunction()) !== -1) {
+    var h = t.getHandlerFunction();
+    if (legacy.indexOf(h) !== -1 || /zenserp/i.test(h)) {
       ScriptApp.deleteTrigger(t);
       deleted++;
     }
   });
   PropertiesService.getScriptProperties().setProperty('zenserpRunning', 'false');
   console.log('Removed ' + deleted + ' legacy Zenserp trigger(s).');
+  var left = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); });
+  console.log('Triggers still in this project: ' + (left.length ? left.join(', ') : 'none'));
 }
 
 function adsDfsCostEstimate() {
@@ -200,6 +204,7 @@ function adsDfsResumeNow_(job) {
   var k = function (n) { return adsDfsKey_(job, n); };
   props.setProperty(k('Running'), 'true');
   props.setProperty(k('StartTime'), new Date().toISOString());   // fresh 8h for the watchdog
+  props.setProperty(k('LastProgress'), new Date().toISOString());
   props.setProperty(k('RetryCount'), '0');
   deleteAdsDfsBatchTriggers_(job);
   ScriptApp.newTrigger(ADS_DFS_HANDLERS[job].run).timeBased().after(ADS_DFS.stepGapSeconds * 1000).create();
@@ -233,6 +238,7 @@ function startAdsDfsJob_(job) {
   props.setProperty(k('BatchIndex'), '0');
   props.setProperty(k('Offset'), '0');
   props.setProperty(k('StartTime'), new Date().toISOString());
+  props.setProperty(k('LastProgress'), new Date().toISOString());
   props.setProperty(k('RetryCount'), '0');
   deleteAdsDfsBatchTriggers_(job);
 
@@ -258,8 +264,29 @@ function stopAdsDfsAutomation() {
   console.log('DFS ads automation stopped.');
 }
 
+/** Hourly watchdog: per job, clears a run stuck for more than maxRunHours and continues a stalled one. */
 function checkAdsDfsAbandonedFlags() {
-  Object.keys(ADS_DFS.jobs).forEach(function (job) { adsDfsCheckAbandoned_(job); });
+  Object.keys(ADS_DFS.jobs).forEach(function (job) {
+    adsDfsCheckAbandoned_(job);
+    adsDfsResumeIfStalled_(job);
+  });
+}
+
+/**
+ * A run is stalled when it is marked running but no next step is scheduled and nothing has
+ * happened for 15 minutes (e.g. Google killed a step and the backup trigger was lost).
+ * The watchdog then continues it from where it got to, keeping the rows already written.
+ */
+function adsDfsResumeIfStalled_(job) {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(adsDfsKey_(job, 'Running')) !== 'true') return;
+  var handler = ADS_DFS_HANDLERS[job].run;
+  var waiting = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === handler; });
+  var last = new Date(props.getProperty(adsDfsKey_(job, 'LastProgress')) || props.getProperty(adsDfsKey_(job, 'StartTime')) || '');
+  if (waiting || isNaN(last.getTime()) || new Date() - last < 15 * 60 * 1000) return;
+  console.log('⚠️ [WATCHDOG] ' + ADS_DFS.jobs[job].label + ' stalled (nothing scheduled, no progress since ' +
+              last.toISOString() + '). Continuing it.');
+  ScriptApp.newTrigger(handler).timeBased().after(ADS_DFS.stepGapSeconds * 1000).create();
 }
 
 function adsDfsCheckAbandoned_(job) {
@@ -320,6 +347,7 @@ function runAdsDfsJob_(job) {
   // Safety net: if Google kills this execution before it finishes, this trigger resumes the
   // run from the last saved keyword. It is replaced by the normal trigger at the end.
   scheduleNextAdsDfs_(job, 7 * 60);
+  props.setProperty(k('LastProgress'), new Date().toISOString());
 
   var batches = adsDfsBuildBatches_(cfg);
   var clock = adsDfsClock_(executionStart.getTime());   // one time budget for every batch in this step
@@ -453,6 +481,7 @@ function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, exec
     if (rows.length) adsDfsWrite_(lock, outSheet, rows, false);
     pos += chunk.length;
     props.setProperty(adsDfsKey_(job, 'Offset'), String(pos));   // progress survives a killed execution
+    props.setProperty(adsDfsKey_(job, 'LastProgress'), new Date().toISOString());
     console.log(ADS_DFS.jobs[job].label + ' ' + device + ': ' + pos + '/' + keywords.length +
                 ' keywords done (rows ' + startRow + '-' + endRow + ')');
   }
@@ -806,7 +835,7 @@ function checkAdsDfsStatus() {
     var cfg = ADS_DFS.jobs[job];
     console.log('--- ' + cfg.label + ' (' + cfg.outputSheets.mobile + ' / ' + cfg.outputSheets.desktop + ')');
     console.log('Running: ' + (props.getProperty(adsDfsKey_(job, 'Running')) === 'true' ? 'YES' : 'NO'));
-    ['Device', 'BatchIndex', 'Offset', 'StartTime', 'LastBatch', 'LastBatchTime', 'CompletedAt', 'StoppedReason',
+    ['Device', 'BatchIndex', 'Offset', 'StartTime', 'LastProgress', 'LastBatch', 'LastBatchTime', 'CompletedAt', 'StoppedReason',
      'StartupFailure', 'TriggerFailed'].forEach(function (n) {
       var v = props.getProperty(adsDfsKey_(job, n));
       if (v) console.log(n + ': ' + v);
@@ -814,7 +843,7 @@ function checkAdsDfsStatus() {
     var running = props.getProperty(adsDfsKey_(job, 'Running')) === 'true';
     var waiting = handlers.filter(function (h) { return h === ADS_DFS_HANDLERS[job].run; }).length;
     console.log('Next step scheduled: ' + (waiting ? 'yes' : 'NO') + (running && !waiting
-      ? '  <- run is stalled: run ' + (job === 'full' ? 'resumeAdsDfsFullNow()' : 'resumeAdsDfsPriorityNow()') + ' to continue'
+      ? '  <- run is stalled: the hourly watchdog will continue it, or run ' + (job === 'full' ? 'resumeAdsDfsFullNow()' : 'resumeAdsDfsPriorityNow()')
       : ''));
     console.log('Daily starters: ' + handlers.filter(function (h) { return h === ADS_DFS_HANDLERS[job].start; }).length +
                 ' (expected ' + cfg.hours.length + ')');

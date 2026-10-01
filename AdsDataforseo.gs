@@ -17,7 +17,9 @@
  *     'Rate Limited (429)' rows as Zenserp, so Combined Data needs no changes
  *     (DataForSEO account errors are written as 'API error <code>: <message>')
  *   - one keyword per API call (as DataForSEO requires for live calls)
- *   - batches (75 keywords full / 25 high-priority), mobile -> desktop, watchdog, retries, sheet lock
+ *   - batches (75 keywords full / 25 high-priority), mobile -> desktop, run back to back within
+ *     each step; the only pause is a short one when a step reaches its time limit
+ *   - watchdog, retries, sheet lock
  *   - the two jobs keep separate progress and triggers, so they never interfere
  *   - each step uses up to ~5m45s of Google's 6-minute limit; progress is saved after every
  *     group of keywords, and a stopped run can be continued with resumeAdsDfsFullNow() /
@@ -74,6 +76,8 @@ var ADS_DFS = {
                                 // A new round of calls only starts if the slowest round so far in
                                 // this step would still finish before then
   minCallMs          : 30000,   // a round of calls is assumed to take at least this long
+  stepGapSeconds     : 15,      // pause before the next step when a step runs out of time
+                                // (Google treats it as a minimum; steps usually start within ~1 min)
   maxRunHours        : 8,
   maxBatchRetries    : 2,
   maxRequestRetries  : 2,       // in-batch retries for a failed keyword
@@ -198,8 +202,8 @@ function adsDfsResumeNow_(job) {
   props.setProperty(k('StartTime'), new Date().toISOString());   // fresh 8h for the watchdog
   props.setProperty(k('RetryCount'), '0');
   deleteAdsDfsBatchTriggers_(job);
-  ScriptApp.newTrigger(ADS_DFS_HANDLERS[job].run).timeBased().after(60 * 1000).create();
-  console.log('Resuming ' + ADS_DFS.jobs[job].label + ' in 1 minute: ' + (props.getProperty(k('Device')) || 'mobile') +
+  ScriptApp.newTrigger(ADS_DFS_HANDLERS[job].run).timeBased().after(ADS_DFS.stepGapSeconds * 1000).create();
+  console.log('Resuming ' + ADS_DFS.jobs[job].label + ' shortly: ' + (props.getProperty(k('Device')) || 'mobile') +
               ' batch ' + (parseInt(props.getProperty(k('BatchIndex')) || '0', 10) + 1) +
               ', keyword offset ' + (props.getProperty(k('Offset')) || '0'));
 }
@@ -235,7 +239,7 @@ function startAdsDfsJob_(job) {
   console.log('================ STARTING ' + ADS_DFS.jobs[job].label.toUpperCase() + ' ================');
 
   try {
-    ScriptApp.newTrigger(ADS_DFS_HANDLERS[job].run).timeBased().after(60 * 1000).create();
+    ScriptApp.newTrigger(ADS_DFS_HANDLERS[job].run).timeBased().after(ADS_DFS.stepGapSeconds * 1000).create();
   } catch (e) {
     props.setProperty(k('Running'), 'false');
     props.setProperty(k('StartupFailure'), new Date().toISOString() + ': ' + e.message);
@@ -279,16 +283,16 @@ function deleteAdsDfsBatchTriggers_(job) {
   });
 }
 
-function scheduleNextAdsDfs_(job, delayMinutes) {
+function scheduleNextAdsDfs_(job, delaySeconds) {
   var handler = ADS_DFS_HANDLERS[job].run;
   deleteAdsDfsBatchTriggers_(job);
   try {
-    ScriptApp.newTrigger(handler).timeBased().after(delayMinutes * 60 * 1000).create();
+    ScriptApp.newTrigger(handler).timeBased().after(delaySeconds * 1000).create();
   } catch (e) {
     console.log('⚠️ Trigger creation failed: ' + e.message);
     Utilities.sleep(5000);
     try {
-      ScriptApp.newTrigger(handler).timeBased().after((delayMinutes + 1) * 60 * 1000).create();
+      ScriptApp.newTrigger(handler).timeBased().after((delaySeconds + 60) * 1000).create();
     } catch (e2) {
       PropertiesService.getScriptProperties().setProperty(adsDfsKey_(job, 'TriggerFailed'), new Date().toISOString());
       console.log('✗ Trigger creation failed again: ' + e2.message);
@@ -315,56 +319,70 @@ function runAdsDfsJob_(job) {
 
   // Safety net: if Google kills this execution before it finishes, this trigger resumes the
   // run from the last saved keyword. It is replaced by the normal trigger at the end.
-  scheduleNextAdsDfs_(job, 7);
+  scheduleNextAdsDfs_(job, 7 * 60);
 
-  var batches  = adsDfsBuildBatches_(cfg);
-  var device   = props.getProperty(k('Device')) || 'mobile';
-  var batchIdx = parseInt(props.getProperty(k('BatchIndex')) || '0', 10);
-  var offset   = parseInt(props.getProperty(k('Offset')) || '0', 10);
+  var batches = adsDfsBuildBatches_(cfg);
+  var clock = adsDfsClock_(executionStart.getTime());   // one time budget for every batch in this step
+  var firstInStep = true;
+  console.log('Step start: ' + cfg.label);
 
-  if (batchIdx >= batches.length) {
-    console.log('✓ ' + cfg.label + ' complete.');
-    props.setProperty(k('Running'), 'false');
-    props.setProperty(k('CompletedAt'), new Date().toISOString());
-    deleteAdsDfsBatchTriggers_(job);
-    return;
-  }
+  // Batches run back to back until the run is done or this step is out of time
+  while (true) {
+    var device   = props.getProperty(k('Device')) || 'mobile';
+    var batchIdx = parseInt(props.getProperty(k('BatchIndex')) || '0', 10);
+    var offset   = parseInt(props.getProperty(k('Offset')) || '0', 10);
 
-  var batch = batches[batchIdx];
-  console.log('Step start: ' + cfg.label + ' | ' + device + ' batch ' + (batchIdx + 1) + '/' + batches.length +
-              ' (rows ' + batch.start + '-' + batch.end + '), keyword offset ' + offset);
-
-  var result;
-  try {
-    result = getAdsDfsBatch_(job, device, batch.start, batch.end, batchIdx === 0 && offset === 0, offset, executionStart);
-    props.setProperty(k('RetryCount'), '0');
-  } catch (e) {
-    var retryCount = parseInt(props.getProperty(k('RetryCount')) || '0', 10);
-    if (retryCount >= ADS_DFS.maxBatchRetries) {
-      console.log('✗ Batch ' + batchIdx + ' (' + device + ') failed ' + (retryCount + 1) + ' times (' + e.message + '). Skipping.');
-      props.setProperty(k('LastBatch'), device + '_' + batchIdx + '_skipped');
-      props.setProperty(k('RetryCount'), '0');
-      adsDfsAdvance_(job, device, batchIdx);
-      scheduleNextAdsDfs_(job, 1);
+    if (batchIdx >= batches.length) {
+      console.log('✓ ' + cfg.label + ' complete.');
+      props.setProperty(k('Running'), 'false');
+      props.setProperty(k('CompletedAt'), new Date().toISOString());
+      deleteAdsDfsBatchTriggers_(job);
       return;
     }
-    console.log('⚠️ Batch error: ' + e.message + ' (retry ' + (retryCount + 1) + '/' + ADS_DFS.maxBatchRetries + ')');
-    props.setProperty(k('RetryCount'), String(retryCount + 1));
-    scheduleNextAdsDfs_(job, 2);
-    return;
-  }
 
-  if (!result.complete) {
-    // Hit the time guard mid-batch: continue from where it stopped
-    props.setProperty(k('Offset'), String(result.nextOffset));
-    scheduleNextAdsDfs_(job, 1);
-    return;
-  }
+    if (!firstInStep && !clock.canStart()) {
+      // No time left for another batch: the next step carries on after a short pause
+      scheduleNextAdsDfs_(job, ADS_DFS.stepGapSeconds);
+      return;
+    }
 
-  props.setProperty(k('LastBatch'), device + '_' + batchIdx + '_ok');
-  props.setProperty(k('LastBatchTime'), new Date().toISOString());
-  adsDfsAdvance_(job, device, batchIdx);
-  scheduleNextAdsDfs_(job, 1);
+    var batch = batches[batchIdx];
+    console.log(cfg.label + ' | ' + device + ' batch ' + (batchIdx + 1) + '/' + batches.length +
+                ' (rows ' + batch.start + '-' + batch.end + '), keyword offset ' + offset);
+
+    var result;
+    try {
+      result = getAdsDfsBatch_(job, device, batch.start, batch.end, batchIdx === 0 && offset === 0, offset,
+                               executionStart, clock, firstInStep);
+      props.setProperty(k('RetryCount'), '0');
+    } catch (e) {
+      var retryCount = parseInt(props.getProperty(k('RetryCount')) || '0', 10);
+      if (retryCount >= ADS_DFS.maxBatchRetries) {
+        console.log('✗ Batch ' + batchIdx + ' (' + device + ') failed ' + (retryCount + 1) + ' times (' + e.message + '). Skipping.');
+        props.setProperty(k('LastBatch'), device + '_' + batchIdx + '_skipped');
+        props.setProperty(k('RetryCount'), '0');
+        adsDfsAdvance_(job, device, batchIdx);
+        scheduleNextAdsDfs_(job, ADS_DFS.stepGapSeconds);
+        return;
+      }
+      console.log('⚠️ Batch error: ' + e.message + ' (retry ' + (retryCount + 1) + '/' + ADS_DFS.maxBatchRetries + ')');
+      props.setProperty(k('RetryCount'), String(retryCount + 1));
+      scheduleNextAdsDfs_(job, 2 * 60);
+      return;
+    }
+    firstInStep = false;
+
+    if (!result.complete) {
+      // Out of time mid-batch: the next step continues from where this one stopped
+      props.setProperty(k('Offset'), String(result.nextOffset));
+      scheduleNextAdsDfs_(job, ADS_DFS.stepGapSeconds);
+      return;
+    }
+
+    props.setProperty(k('LastBatch'), device + '_' + batchIdx + '_ok');
+    props.setProperty(k('LastBatchTime'), new Date().toISOString());
+    adsDfsAdvance_(job, device, batchIdx);
+  }
 }
 
 /** Batches of batchSize rows within the job's range, only as far as the keywords go. */
@@ -406,7 +424,7 @@ function adsDfsAdvance_(job, device, batchIdx) {
 // FETCH ONE BATCH
 // ==========================================================
 
-function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, executionStart) {
+function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, executionStart, clock, firstInStep) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var inputSheet = ss.getSheetByName(ADS_DFS.inputSheetName);
   if (!inputSheet) throw new Error('Input sheet not found: ' + ADS_DFS.inputSheetName);
@@ -421,13 +439,12 @@ function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, exec
   var keywords = inputSheet.getRange(startRow, 1, endRow - startRow + 1, 1).getValues()
                            .map(function (r) { return String(r[0] || '').trim(); });
   var headers = adsDfsHeaders_();
-  var clock = adsDfsClock_(executionStart.getTime());
   var pos = offset;
 
   while (pos < keywords.length) {
     var chunk = keywords.slice(pos, pos + Math.max(1, ADS_DFS.jobs[job].parallelRequests));
     // The first group of every step always finishes, so a very slow API can't stall the run
-    var rows = adsDfsFetchChunk_(chunk, device, headers, clock, pos === offset);
+    var rows = adsDfsFetchChunk_(chunk, device, headers, clock, firstInStep && pos === offset);
     if (rows === null) {
       // Out of time part-way through this group: nothing written, the group is redone next step
       console.log('⏱ Time limit reached at keyword ' + pos + '/' + keywords.length + '. Continuing in the next step.');

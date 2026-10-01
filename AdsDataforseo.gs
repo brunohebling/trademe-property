@@ -2,19 +2,20 @@
  * PAID ADS VIA DATAFORSEO - drop-in replacement for the Zenserp script (Multi Functions)
  * Trade Me PROPERTY
  *
- * Same jobs, same schedule, same output tabs as the Property Zenserp script. Only the provider changes.
+ * Same jobs and schedule as the Property Zenserp script, written to DataForSEO tabs with the same
+ * 8 columns (Combined Data reads these; the old AdsResultsZen* tabs keep the last Zenserp results).
  *
  *   FULL RUN       every keyword in 'Final keywords', mobile + desktop, daily at 1am
- *                  -> AdsResultsZenMobile / AdsResultsZenDesktop
+ *                  -> AdsResultsDFSMobile / AdsResultsDFSDesktop
  *   HIGH-PRIORITY  rows 2-101 of 'Final keywords', mobile + desktop, daily at 12pm and 8pm
- *                  -> AdsResultsZenMobile_HighPriority / AdsResultsZenDesktop_HighPriority
+ *                  -> AdsResultsDFSMobile_HighPriority / AdsResultsDFSDesktop_HighPriority
  *
  *   - DataForSEO SERP live/advanced, Auckland; every 'paid' item is one row, tagged top_ads / bottom_ads
  *   - each keyword is looked at samplesPerKeyword (3) times per device, a few seconds apart,
  *     because Google does not show ads on every page load. An ad seen in ANY look is written;
  *     'No Ads Found' only when every look succeeded and none had ads
  *   - same 8 columns and the same 'No Ads Found' / 'Network Error' / 'HTTP xxx' /
- *     'Rate Limited (429)' rows as Zenserp, so Combined Data needs no changes
+ *     'Rate Limited (429)' rows as Zenserp
  *     (DataForSEO account errors are written as 'API error <code>: <message>')
  *   - one keyword per API call (as DataForSEO requires for live calls)
  *   - batches (75 keywords full / 25 high-priority), mobile -> desktop, run back to back within
@@ -29,11 +30,11 @@
  * the rows the script would write. Writes nothing.
  *
  * HOW TO USE
- *   LIVE (current): both jobs' outputSheets = the Zen tabs, so Combined Data reads these results.
- *     One-off setup: stopAdsDfsAutomation(), removeLegacyZenserpTriggers(), setupAdsDfsSchedule().
- *     After that both jobs run by themselves; the hourly watchdog continues a stalled run.
- *   Test without touching live data: set outputSheets to the DFS tabs, run startAdsDfsPriorityNow()
- *     (100 keywords) or startAdsDfsFullNow(), then compareAdsParityPriority() / compareAdsParity().
+ *   One-off setup: stopAdsDfsAutomation(), removeLegacyZenserpTriggers(), setupAdsDfsSchedule().
+ *   After that both jobs run by themselves; the hourly watchdog continues a stalled run.
+ *   startAdsDfsPriorityNow() / startAdsDfsFullNow() run a job straight away.
+ *   compareAdsParityPriority() / compareAdsParity() compare the DFS tabs with the last Zenserp
+ *   results in the AdsResultsZen* tabs.
  *
  * CREDENTIALS: Script Properties DFS_LOGIN / DFS_PASSWORD if set, otherwise config.
  */
@@ -49,8 +50,8 @@ var ADS_DFS = {
       hours        : [1],         // 1am (script time zone)
       batchSize    : 75,          // 3 groups of 25 per step
       parallelRequests: 25,       // ~2,000 keywords need this to finish in ~4-5 hours
-      // LIVE: Combined Data reads these tabs. For a test run use 'AdsResultsDFSMobile' / 'AdsResultsDFSDesktop'
-      outputSheets : { mobile: 'AdsResultsZenMobile', desktop: 'AdsResultsZenDesktop' }
+      // Combined Data reads these tabs
+      outputSheets : { mobile: 'AdsResultsDFSMobile', desktop: 'AdsResultsDFSDesktop' }
     },
     priority: {
       label        : 'High-priority run',
@@ -59,8 +60,8 @@ var ADS_DFS = {
       hours        : [12, 20],    // 12pm and 8pm (script time zone)
       batchSize    : 25,
       parallelRequests: 5,        // 25 + 5 stays within DataForSEO's 30 simultaneous calls
-      // LIVE: Combined Data reads these tabs first. For a test run use the 'AdsResultsDFS..._HighPriority' tabs
-      outputSheets : { mobile: 'AdsResultsZenMobile_HighPriority', desktop: 'AdsResultsZenDesktop_HighPriority' }
+      // Combined Data reads these tabs first, then the full-run tabs
+      outputSheets : { mobile: 'AdsResultsDFSMobile_HighPriority', desktop: 'AdsResultsDFSDesktop_HighPriority' }
     }
   },
 

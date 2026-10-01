@@ -1,0 +1,4 @@
+const DFS_LOGIN     = 'propertyonesearch@trademe.co.nz';   // ← your login
+const DFS_PASSWORD  = '54cb794c46c6617f';              // ← your password
+const LOCATION      = 'New Zealand';
+const LANGUAGE_CODE = 'en';

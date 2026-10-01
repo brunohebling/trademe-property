@@ -1,0 +1,978 @@
+// ============================================================
+// ZENSERP AUTOMATION - TIMEOUT-AWARE REDESIGN
+// Bruno's One Search - Trade Me Property
+// ============================================================
+// ROOT CAUSE FIX: Apps Script 6-minute execution limit
+// SOLUTION: Smaller batches, split high-priority runs, timeout detection
+// ============================================================
+
+var ZEN_CONFIG = {
+  apiKey: '0938eb50-5886-11f0-8598-174517d293c3',
+  inputSheetName: 'Final keywords',
+  location: 'New Zealand',
+  hl: 'en',
+  delayMs: 100,  // REDUCED from 500ms to give more time for API calls
+  
+  // TIMEOUT SAFETY
+  maxExecutionTimeMs: 330000,  // 5 minutes (leave 60s buffer before 360s limit)
+  
+  // High-priority settings
+  highPriorityBatch: { start: 2, end: 101 },
+  highPriorityHours: [12,20],
+  
+  // Output sheet names
+  outputSheets: {
+    mobile: 'AdsResultsZenMobile',
+    desktop: 'AdsResultsZenDesktop',
+    mobileHighPriority: 'AdsResultsZenMobile_HighPriority',
+    desktopHighPriority: 'AdsResultsZenDesktop_HighPriority'
+  },
+  
+  // Full automation settings
+  fullAutomationHour: 1,  // 1am NZ time for full daily run
+  
+  // Recovery settings
+  maxRunHours: 8,
+  maxBatchRetries: 2,
+  lockTimeoutMs: 30000,
+  rate429DelayMs: 5000
+};
+
+// REDESIGNED: Covers 3000 keywords (rows 2-3001) with 50 keywords per batch
+var ZEN_BATCH_CONFIG = {
+  mobile: [
+    { start: 2,    end: 51 },   // Batch 1
+    { start: 52,   end: 101 },
+    { start: 102,  end: 151 },
+    { start: 152,  end: 201 },
+    { start: 202,  end: 251 },
+    { start: 252,  end: 301 },
+    { start: 302,  end: 351 },
+    { start: 352,  end: 401 },
+    { start: 402,  end: 451 },
+    { start: 452,  end: 501 },
+    { start: 502,  end: 551 },
+    { start: 552,  end: 601 },
+    { start: 602,  end: 651 },
+    { start: 652,  end: 701 },
+    { start: 702,  end: 751 },
+    { start: 752,  end: 801 },
+    { start: 802,  end: 851 },
+    { start: 852,  end: 901 },
+    { start: 902,  end: 951 },
+    { start: 952,  end: 1001 },
+    { start: 1002, end: 1051 },
+    { start: 1052, end: 1101 },
+    { start: 1102, end: 1151 },
+    { start: 1152, end: 1201 },
+    { start: 1202, end: 1251 },
+    { start: 1252, end: 1301 },
+    { start: 1302, end: 1351 },
+    { start: 1352, end: 1401 },
+    { start: 1402, end: 1451 },
+    { start: 1452, end: 1501 },
+    { start: 1502, end: 1551 },
+    { start: 1552, end: 1601 },
+    { start: 1602, end: 1651 },
+    { start: 1652, end: 1701 },
+    { start: 1702, end: 1751 },
+    { start: 1752, end: 1801 },
+    { start: 1802, end: 1851 },
+    { start: 1852, end: 1901 },
+    { start: 1902, end: 1951 },
+    { start: 1952, end: 2001 },
+    { start: 2002, end: 2051 },
+    { start: 2052, end: 2101 },
+    { start: 2102, end: 2151 },
+    { start: 2152, end: 2201 },
+    { start: 2202, end: 2251 },
+    { start: 2252, end: 2301 },
+    { start: 2302, end: 2351 },
+    { start: 2352, end: 2401 },
+    { start: 2402, end: 2451 },
+    { start: 2452, end: 2501 },
+    { start: 2502, end: 2551 },
+    { start: 2552, end: 2601 },
+    { start: 2602, end: 2651 },
+    { start: 2652, end: 2701 },
+    { start: 2702, end: 2751 },
+    { start: 2752, end: 2801 },
+    { start: 2802, end: 2851 },
+    { start: 2852, end: 2901 },
+    { start: 2902, end: 2951 },
+    { start: 2952, end: 3001 }   // Batch 60 (final batch: 50 keywords)
+  ],
+  desktop: [
+    { start: 2,    end: 51 },   // Batch 1
+    { start: 52,   end: 101 },
+    { start: 102,  end: 151 },
+    { start: 152,  end: 201 },
+    { start: 202,  end: 251 },
+    { start: 252,  end: 301 },
+    { start: 302,  end: 351 },
+    { start: 352,  end: 401 },
+    { start: 402,  end: 451 },
+    { start: 452,  end: 501 },
+    { start: 502,  end: 551 },
+    { start: 552,  end: 601 },
+    { start: 602,  end: 651 },
+    { start: 652,  end: 701 },
+    { start: 702,  end: 751 },
+    { start: 752,  end: 801 },
+    { start: 802,  end: 851 },
+    { start: 852,  end: 901 },
+    { start: 902,  end: 951 },
+    { start: 952,  end: 1001 },
+    { start: 1002, end: 1051 },
+    { start: 1052, end: 1101 },
+    { start: 1102, end: 1151 },
+    { start: 1152, end: 1201 },
+    { start: 1202, end: 1251 },
+    { start: 1252, end: 1301 },
+    { start: 1302, end: 1351 },
+    { start: 1352, end: 1401 },
+    { start: 1402, end: 1451 },
+    { start: 1452, end: 1501 },
+    { start: 1502, end: 1551 },
+    { start: 1552, end: 1601 },
+    { start: 1602, end: 1651 },
+    { start: 1652, end: 1701 },
+    { start: 1702, end: 1751 },
+    { start: 1752, end: 1801 },
+    { start: 1802, end: 1851 },
+    { start: 1852, end: 1901 },
+    { start: 1902, end: 1951 },
+    { start: 1952, end: 2001 },
+    { start: 2002, end: 2051 },
+    { start: 2052, end: 2101 },
+    { start: 2102, end: 2151 },
+    { start: 2152, end: 2201 },
+    { start: 2202, end: 2251 },
+    { start: 2252, end: 2301 },
+    { start: 2302, end: 2351 },
+    { start: 2352, end: 2401 },
+    { start: 2402, end: 2451 },
+    { start: 2452, end: 2501 },
+    { start: 2502, end: 2551 },
+    { start: 2552, end: 2601 },
+    { start: 2602, end: 2651 },
+    { start: 2652, end: 2701 },
+    { start: 2702, end: 2751 },
+    { start: 2752, end: 2801 },
+    { start: 2802, end: 2851 },
+    { start: 2852, end: 2901 },
+    { start: 2902, end: 2951 },
+    { start: 2952, end: 3001 }   // Batch 60 (final batch: 50 keywords)
+  ]
+};
+
+// Trigger handler function names
+var ZEN_TRIGGER_HANDLER = 'runZenserpAutomation';
+var ZEN_HIGH_PRIORITY_HANDLER_MOBILE = 'runHighPriorityBatchMobile';  // SEPARATE
+var ZEN_HIGH_PRIORITY_HANDLER_DESKTOP = 'runHighPriorityBatchDesktop';  // SEPARATE
+var ZEN_DAILY_STARTER = 'startZenserpAutomation';
+var ZEN_WATCHDOG = 'checkAbandonedFlags';
+
+
+// ==========================================================
+// AUTONOMOUS SETUP - RUN THIS ONCE
+// ==========================================================
+
+function setupFullyAutonomousSchedule() {
+  removeAllSchedules();
+  
+  Logger.log('================ SETTING UP AUTONOMOUS SCHEDULE ================');
+  Logger.log('✓ Using 50-keyword batches to avoid timeout (360s limit)');
+  Logger.log('✓ High-priority: Mobile and Desktop run in SEPARATE executions');
+  Logger.log('✓ Timeout detection: 5-minute limit per execution');
+  Logger.log('');
+  
+  // 1. Set up daily full automation trigger
+  ScriptApp.newTrigger(ZEN_DAILY_STARTER)
+    .timeBased()
+    .everyDays(1)
+    .atHour(ZEN_CONFIG.fullAutomationHour)
+    .nearMinute(0)
+    .create();
+  
+  Logger.log('✓ Full automation scheduled for ' + ZEN_CONFIG.fullAutomationHour + ':00 daily');
+  Logger.log('  → ' + ZEN_BATCH_CONFIG.mobile.length + ' batches × 2 devices');
+  
+  // 2. Set up HIGH-PRIORITY MOBILE trigger (separate from desktop)
+  var hours = ZEN_CONFIG.highPriorityHours;
+  
+  hours.forEach(function(hour) {
+    ScriptApp.newTrigger(ZEN_HIGH_PRIORITY_HANDLER_MOBILE)
+      .timeBased()
+      .everyDays(1)
+      .atHour(hour)
+      .nearMinute(0)
+      .create();
+  });
+  
+  Logger.log('✓ High-priority MOBILE scheduled for ' + hours.join(':00, ') + ':00');
+  
+  // 3. Set up HIGH-PRIORITY DESKTOP trigger (5 minutes after mobile)
+  // This prevents both from running simultaneously
+  hours.forEach(function(hour) {
+    var nextHour = hour;
+    var nextMin = 5;
+    if (hour === 23) { nextHour = 0; }
+    
+    ScriptApp.newTrigger(ZEN_HIGH_PRIORITY_HANDLER_DESKTOP)
+      .timeBased()
+      .everyDays(1)
+      .atHour(nextHour)
+      .nearMinute(nextMin)
+      .create();
+  });
+  
+  Logger.log('✓ High-priority DESKTOP scheduled for ' + hours.join(':05, ') + ':05 (5 min offset)');
+  
+  // 4. Set up watchdog
+  ScriptApp.newTrigger(ZEN_WATCHDOG)
+    .timeBased()
+    .everyHours(1)
+    .create();
+  
+  Logger.log('✓ Watchdog scheduled every hour');
+  
+  Logger.log('');
+  Logger.log('MATH CHECK:');
+  Logger.log('- 50 keywords/batch × 300ms sleep = 15 seconds');
+  Logger.log('- Leaves 295 seconds for API calls');
+  Logger.log('- Average: 5.9s per request (safe buffer)');
+  Logger.log('- If Zenserp averages 4s: 200s + 15s sleep = 215s total ✓');
+  Logger.log('');
+  Logger.log('All triggers created. System will run autonomously from tomorrow.');
+  Logger.log('================================================================');
+}
+
+
+function removeAllSchedules() {
+  var triggers = ScriptApp.getProjectTriggers();
+  var deleted = 0;
+  
+  var handlersToRemove = [
+    ZEN_TRIGGER_HANDLER, 
+    ZEN_HIGH_PRIORITY_HANDLER_MOBILE,
+    ZEN_HIGH_PRIORITY_HANDLER_DESKTOP,
+    ZEN_DAILY_STARTER, 
+    ZEN_WATCHDOG
+  ];
+  
+  triggers.forEach(function(trigger) {
+    if (handlersToRemove.indexOf(trigger.getHandlerFunction()) !== -1) {
+      ScriptApp.deleteTrigger(trigger);
+      deleted++;
+    }
+  });
+  
+  Logger.log('Removed ' + deleted + ' trigger(s). All automation stopped.');
+  
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('zenserpRunning', 'false');
+  props.deleteProperty('zenserpRetryCount');
+  props.deleteProperty('zenserpTriggerFailed');
+}
+
+
+// ==========================================================
+// WATCHDOG
+// ==========================================================
+
+function checkAbandonedFlags() {
+  var props = PropertiesService.getScriptProperties();
+  var running = props.getProperty('zenserpRunning') === 'true';
+  
+  if (!running) return;
+  
+  var startTime = props.getProperty('zenserpStartTime');
+  
+  if (!startTime || startTime.trim() === '') {
+    Logger.log('⚠️ [WATCHDOG] Abandoned flag: running=true, no startTime. Clearing.');
+    props.setProperty('zenserpRunning', 'false');
+    props.setProperty('zenserpStoppedReason', 'watchdog_abandoned_' + new Date().toISOString());
+    deleteZenserpBatchTriggers();
+    return;
+  }
+  
+  try {
+    var startDate = new Date(startTime);
+    
+    if (isNaN(startDate.getTime())) {
+      Logger.log('⚠️ [WATCHDOG] Invalid startTime. Clearing.');
+      props.setProperty('zenserpRunning', 'false');
+      props.setProperty('zenserpStoppedReason', 'watchdog_invalid_time_' + new Date().toISOString());
+      deleteZenserpBatchTriggers();
+      return;
+    }
+    
+    var hoursElapsed = (new Date() - startDate) / (1000 * 60 * 60);
+    
+    if (hoursElapsed > ZEN_CONFIG.maxRunHours) {
+      Logger.log('⚠️ [WATCHDOG] Stuck run (' + hoursElapsed.toFixed(1) + 'h). Clearing.');
+      props.setProperty('zenserpRunning', 'false');
+      props.setProperty('zenserpStoppedReason', 'watchdog_timeout_' + new Date().toISOString());
+      deleteZenserpBatchTriggers();
+    }
+    
+  } catch (e) {
+    Logger.log('⚠️ [WATCHDOG] Error: ' + e.message + '. Clearing.');
+    props.setProperty('zenserpRunning', 'false');
+    deleteZenserpBatchTriggers();
+  }
+}
+
+
+// ==========================================================
+// HIGH-PRIORITY BATCH - NOW SEPARATE MOBILE & DESKTOP
+// ==========================================================
+
+/**
+ * REDESIGNED: Run only mobile high-priority batch.
+ * Desktop runs 5 minutes later in separate execution.
+ * This prevents timeout on 200 keywords in one run.
+ */
+function runHighPriorityBatchMobile() {
+  var batch = ZEN_CONFIG.highPriorityBatch;
+  var props = PropertiesService.getScriptProperties();
+  
+  Logger.log('================ HIGH-PRIORITY MOBILE ================');
+  Logger.log('Time: ' + new Date().toISOString());
+  Logger.log('Rows ' + batch.start + '-' + batch.end);
+  
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var runCount = parseInt(props.getProperty('highPriorityMobileRunCount_' + todayStr) || '0', 10);
+  
+  try {
+    runHighPriorityForDevice('mobile', batch.start, batch.end);
+    
+    runCount++;
+    props.setProperty('highPriorityMobileRunCount_' + todayStr, String(runCount));
+    props.setProperty('lastHighPriorityMobileRun', new Date().toISOString());
+    
+    Logger.log('✓ Mobile complete. Run #' + runCount + ' for ' + todayStr);
+    
+  } catch (e) {
+    Logger.log('✗ Error: ' + e.message);
+  }
+  
+  Logger.log('=====================================================');
+}
+
+
+/**
+ * REDESIGNED: Run only desktop high-priority batch.
+ * Runs 5 minutes after mobile in separate execution.
+ */
+function runHighPriorityBatchDesktop() {
+  var batch = ZEN_CONFIG.highPriorityBatch;
+  var props = PropertiesService.getScriptProperties();
+  
+  Logger.log('================ HIGH-PRIORITY DESKTOP ================');
+  Logger.log('Time: ' + new Date().toISOString());
+  Logger.log('Rows ' + batch.start + '-' + batch.end);
+  
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  var runCount = parseInt(props.getProperty('highPriorityDesktopRunCount_' + todayStr) || '0', 10);
+  
+  try {
+    runHighPriorityForDevice('desktop', batch.start, batch.end);
+    
+    runCount++;
+    props.setProperty('highPriorityDesktopRunCount_' + todayStr, String(runCount));
+    props.setProperty('lastHighPriorityDesktopRun', new Date().toISOString());
+    
+    Logger.log('✓ Desktop complete. Run #' + runCount + ' for ' + todayStr);
+    
+  } catch (e) {
+    Logger.log('✗ Error: ' + e.message);
+  }
+  
+  Logger.log('======================================================');
+}
+
+
+/**
+ * Fetch ads for high-priority batch with timeout detection.
+ */
+function runHighPriorityForDevice(device, startRow, endRow) {
+  var executionStart = new Date();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var inputSheet = ss.getSheetByName(ZEN_CONFIG.inputSheetName);
+  
+  var outputSheetName = device === 'mobile' 
+    ? ZEN_CONFIG.outputSheets.mobileHighPriority 
+    : ZEN_CONFIG.outputSheets.desktopHighPriority;
+  
+  var outputSheet = ss.getSheetByName(outputSheetName);
+  if (!outputSheet) {
+    outputSheet = ss.insertSheet(outputSheetName);
+  }
+  
+  if (!inputSheet) {
+    throw new Error('Input sheet not found.');
+  }
+  
+  var lastInputRow = inputSheet.getLastRow();
+  if (startRow > lastInputRow) return;
+  
+  var actualEndRow = Math.min(endRow, lastInputRow);
+  var numRows = actualEndRow - startRow + 1;
+  
+  var keywords = inputSheet
+    .getRange(startRow, 1, numRows, 1)
+    .getValues()
+    .flat()
+    .filter(String);
+  
+  if (keywords.length === 0) return;
+  
+  var rows = [];
+  
+  for (var i = 0; i < keywords.length; i++) {
+    var keyword = keywords[i];
+    var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    
+    // CHECK TIMEOUT - stop 30s before limit to allow write
+    var elapsedMs = new Date() - executionStart;
+    if (elapsedMs > ZEN_CONFIG.maxExecutionTimeMs) {
+      Logger.log('⚠️ Timeout detection: ' + (elapsedMs / 1000).toFixed(1) + 's elapsed. Stopping fetch.');
+      break;
+    }
+    
+    try {
+      var url = buildZenserpUrl(keyword, device);
+      var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var code = response.getResponseCode();
+      
+      if (code === 429) {
+        rows.push([ts, keyword, '', '', 'Rate Limited (429)', '', '', '']);
+        continue;
+      }
+      
+      if (code !== 200) {
+        rows.push([ts, keyword, '', '', 'HTTP ' + code, '', '', '']);
+        continue;
+      }
+      
+      var data = JSON.parse(response.getContentText());
+      var found = 0;
+      
+      if (data.ads) {
+        ['top', 'bottom'].forEach(function(pos) {
+          (data.ads[pos] || []).forEach(function(ad, idx) {
+            found++;
+            rows.push([
+              ts, keyword, pos + '_ads', ad.position || (idx + 1),
+              ad.title || '', ad.displayed_link || '',
+              ad.url || '', ad.snippet || ad.description || ''
+            ]);
+          });
+        });
+      }
+      
+      if (data.paid) {
+        Object.keys(data.paid).forEach(function(k) {
+          var ad = data.paid[k];
+          found++;
+          rows.push([
+            ts, keyword, 'paid', k,
+            ad.title || '', ad.visurl || '',
+            ad.destinationUrl || ad.trackingUrl || '',
+            ad.description || ''
+          ]);
+        });
+      }
+      
+      if (found === 0) {
+        rows.push([ts, keyword, '', '', 'No Ads Found', '', '', '']);
+      }
+      
+    } catch (err) {
+      if (err.message && err.message.indexOf('fetch') !== -1) {
+        rows.push([ts, keyword, '', '', 'Network Error', '', '', '']);
+      } else {
+        throw err;
+      }
+    }
+    
+    if (i < keywords.length - 1) {
+      Utilities.sleep(ZEN_CONFIG.delayMs);
+    }
+  }
+  
+  // Write results
+  if (rows.length > 0) {
+    var lock = LockService.getScriptLock();
+    acquireLockAndWrite(lock, outputSheet, rows, true);
+  }
+  
+  var duration = ((new Date() - executionStart) / 1000).toFixed(1);
+  Logger.log('Wrote ' + rows.length + ' rows in ' + duration + 's');
+}
+
+
+// ==========================================================
+// FULL AUTOMATION - TIMEOUT-AWARE
+// ==========================================================
+
+function startZenserpAutomation() {
+  var props = PropertiesService.getScriptProperties();
+  
+  if (props.getProperty('zenserpRunning') === 'true') {
+    var startTime = props.getProperty('zenserpStartTime');
+    if (startTime && startTime.trim() !== '') {
+      try {
+        var startDate = new Date(startTime);
+        if (!isNaN(startDate.getTime())) {
+          var hoursElapsed = (new Date() - startDate) / (1000 * 60 * 60);
+          if (hoursElapsed > ZEN_CONFIG.maxRunHours) {
+            Logger.log('⚠️ Stale run (' + hoursElapsed.toFixed(1) + 'h). Auto-recovering.');
+            props.setProperty('zenserpRunning', 'false');
+            deleteZenserpBatchTriggers();
+          } else {
+            Logger.log('Already running. Skipping.');
+            return;
+          }
+        }
+      } catch (e) {
+        props.setProperty('zenserpRunning', 'false');
+      }
+    } else {
+      props.setProperty('zenserpRunning', 'false');
+    }
+  }
+  
+  props.setProperty('zenserpRunning', 'true');
+  props.setProperty('zenserpDevice', 'mobile');
+  props.setProperty('zenserpBatchIndex', '0');
+  props.setProperty('zenserpStartTime', new Date().toISOString());
+  props.setProperty('zenserpRetryCount', '0');
+  
+  deleteZenserpBatchTriggers();
+  
+  Logger.log('================ STARTING FULL DAILY AUTOMATION ================');
+  Logger.log('Time: ' + new Date().toISOString());
+  Logger.log('Batch size: 50 keywords (timeout-safe)');
+  Logger.log('Total batches: ' + ZEN_BATCH_CONFIG.mobile.length + ' per device');
+  Logger.log('Expected timeline: ~' + (ZEN_BATCH_CONFIG.mobile.length * 4) + ' minutes');
+  
+  ScriptApp.newTrigger(ZEN_TRIGGER_HANDLER)
+    .timeBased()
+    .after(60 * 1000)
+    .create();
+}
+
+
+/**
+ * Main batch processor with timeout detection.
+ */
+function runZenserpAutomation() {
+  var executionStart = new Date();
+  var props = PropertiesService.getScriptProperties();
+  
+  if (props.getProperty('zenserpRunning') !== 'true') {
+    deleteZenserpBatchTriggers();
+    return;
+  }
+  
+  var device = props.getProperty('zenserpDevice') || 'mobile';
+  var batchIdx = parseInt(props.getProperty('zenserpBatchIndex') || '0', 10);
+  var retryCount = parseInt(props.getProperty('zenserpRetryCount') || '0', 10);
+  
+  var totalBatches = ZEN_BATCH_CONFIG.mobile.length;
+  
+  // Completion check - FIXED to check device
+  if (device === 'mobile' && batchIdx >= totalBatches) {
+    Logger.log('✓ All batches complete!');
+    props.setProperty('zenserpRunning', 'false');
+    props.setProperty('zenserpCompletedAt', new Date().toISOString());
+    deleteZenserpBatchTriggers();
+    return;
+  }
+  
+  var batches = ZEN_BATCH_CONFIG[device];
+  if (!batches || batchIdx >= batches.length) {
+    var nextDevice = (device === 'mobile') ? 'desktop' : 'mobile';
+    var nextBatchIdx = (device === 'mobile') ? batchIdx : batchIdx + 1;
+    
+    props.setProperty('zenserpDevice', nextDevice);
+    props.setProperty('zenserpBatchIndex', String(nextBatchIdx));
+    props.setProperty('zenserpRetryCount', '0');
+    
+    Logger.log('Switching to ' + nextDevice + ' batches...');
+    scheduleNextBatch();
+    return;
+  }
+  
+  var batch = batches[batchIdx];
+  
+  Logger.log('Processing ' + device.toUpperCase() + ' batch ' + (batchIdx + 1) + '/' + totalBatches + 
+    ' (rows ' + batch.start + '-' + batch.end + ')' + 
+    (retryCount > 0 ? ' [RETRY #' + retryCount + ']' : ''));
+  
+  var clearSheet = (batchIdx === 0 && retryCount === 0);
+  var batchSuccess = false;
+  
+  try {
+    getZenserpAds(device, batch.start, batch.end, clearSheet, executionStart);
+    batchSuccess = true;
+    props.setProperty('zenserpRetryCount', '0');
+    
+} catch (e) {
+    Logger.log('⚠️ Batch error: ' + e.message);
+    Logger.log('Auto-resuming from batch ' + batchIdx + ' in 2 minutes...');
+    props.setProperty('zenserpRunning', 'true');
+    scheduleNextBatch(2);
+    return;
+  }
+  
+  var nextDevice = (device === 'mobile') ? 'desktop' : 'mobile';
+  var nextBatchIdx = (device === 'mobile') ? batchIdx : batchIdx + 1;
+  
+  props.setProperty('zenserpDevice', nextDevice);
+  props.setProperty('zenserpBatchIndex', String(nextBatchIdx));
+  props.setProperty('zenserpLastBatch', device + '_' + batchIdx + '_' + (batchSuccess ? 'ok' : 'failed'));
+  props.setProperty('zenserpLastBatchTime', new Date().toISOString());
+  
+  scheduleNextBatch();
+}
+
+
+function scheduleNextBatch(delayMinutes) {
+  delayMinutes = delayMinutes || 2;
+  
+  deleteZenserpBatchTriggers();
+  
+  try {
+    ScriptApp.newTrigger(ZEN_TRIGGER_HANDLER)
+      .timeBased()
+      .after(delayMinutes * 60 * 1000)
+      .create();
+      
+  } catch (e) {
+    Logger.log('⚠️ Trigger creation failed: ' + e.message);
+    Utilities.sleep(5000);
+    
+    try {
+      ScriptApp.newTrigger(ZEN_TRIGGER_HANDLER)
+        .timeBased()
+        .after((delayMinutes + 1) * 60 * 1000)
+        .create();
+      Logger.log('✓ Trigger created on retry');
+    } catch (e2) {
+      Logger.log('✗ Trigger creation failed again: ' + e2.message);
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty('zenserpTriggerFailed', new Date().toISOString());
+    }
+  }
+}
+
+
+/**
+ * Core fetch function with TIMEOUT DETECTION.
+ */
+function getZenserpAds(device, startRow, endRow, clearSheet, executionStart) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var inputSheet = ss.getSheetByName(ZEN_CONFIG.inputSheetName);
+  
+  var outputSheetName = device === 'mobile' 
+    ? ZEN_CONFIG.outputSheets.mobile 
+    : ZEN_CONFIG.outputSheets.desktop;
+  
+  var outputSheet = ss.getSheetByName(outputSheetName);
+  if (!outputSheet) {
+    outputSheet = ss.insertSheet(outputSheetName);
+  }
+  
+  if (!inputSheet) {
+    throw new Error('Input sheet not found.');
+  }
+  
+  var lock = LockService.getScriptLock();
+  
+  if (clearSheet) {
+    var header = ['Timestamp', 'Keyword', 'Ad Type', 'Ad Position',
+                  'Ad Title', 'Displayed Link', 'Ad Link', 'Ad Snippet'];
+    acquireLockAndWrite(lock, outputSheet, [header], true);
+  }
+  
+  var lastInputRow = inputSheet.getLastRow();
+  if (startRow > lastInputRow) return;
+  
+  var actualEndRow = Math.min(endRow, lastInputRow);
+  var numRows = actualEndRow - startRow + 1;
+  if (numRows <= 0) return;
+  
+  var keywords = inputSheet
+    .getRange(startRow, 1, numRows, 1)
+    .getValues()
+    .flat()
+    .filter(String);
+  
+  if (keywords.length === 0) return;
+  
+  var rows = [];
+  var rate429Count = 0;
+  
+  for (var i = 0; i < keywords.length; i++) {
+    var keyword = keywords[i];
+    var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    
+    // TIMEOUT CHECK - stop if approaching limit
+    var elapsedMs = new Date() - executionStart;
+    if (elapsedMs > ZEN_CONFIG.maxExecutionTimeMs) {
+      Logger.log('⚠️ Timeout: ' + (elapsedMs / 1000).toFixed(1) + 's elapsed. Stopping at keyword ' + (i + 1) + '/' + keywords.length);
+      if (rate429Count >= 3) {
+        throw new Error('Timeout + rate limited. Will retry.');
+      }
+      break;
+    }
+    
+    try {
+      var url = buildZenserpUrl(keyword, device);
+      var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var code = response.getResponseCode();
+      
+      if (code === 429) {
+        rate429Count++;
+        rows.push([ts, keyword, '', '', 'Rate Limited (429)', '', '', '']);
+        
+        if (rate429Count >= 3) {
+          throw new Error('Batch rate limited (429).');
+        }
+        continue;
+      }
+      
+      if (code !== 200) {
+        rows.push([ts, keyword, '', '', 'HTTP ' + code, '', '', '']);
+        continue;
+      }
+      
+      var data = JSON.parse(response.getContentText());
+      var found = 0;
+      
+      if (data.ads) {
+        ['top', 'bottom'].forEach(function(pos) {
+          (data.ads[pos] || []).forEach(function(ad, idx) {
+            found++;
+            rows.push([
+              ts, keyword, pos + '_ads', ad.position || (idx + 1),
+              ad.title || '', ad.displayed_link || '',
+              ad.url || '', ad.snippet || ad.description || ''
+            ]);
+          });
+        });
+      }
+      
+      if (data.paid) {
+        Object.keys(data.paid).forEach(function(k) {
+          var ad = data.paid[k];
+          found++;
+          rows.push([
+            ts, keyword, 'paid', k,
+            ad.title || '', ad.visurl || '',
+            ad.destinationUrl || ad.trackingUrl || '',
+            ad.description || ''
+          ]);
+        });
+      }
+      
+      if (found === 0) {
+        rows.push([ts, keyword, '', '', 'No Ads Found', '', '', '']);
+      }
+      
+    } catch (err) {
+      if (err.message && err.message.indexOf('429') !== -1) {
+        throw err;
+      } else if (err.message && (err.message.indexOf('fetch') !== -1 || err.message.indexOf('Connection') !== -1)) {
+        rows.push([ts, keyword, '', '', 'Network Error', '', '', '']);
+      } else {
+        throw err;
+      }
+    }
+    
+    if (i < keywords.length - 1) {
+      Utilities.sleep(ZEN_CONFIG.delayMs);
+    }
+  }
+  
+  if (rows.length > 0) {
+    acquireLockAndWrite(lock, outputSheet, rows, false);
+  }
+  
+  if (rate429Count > 0) {
+    Logger.log('⚠️ Rate limited ' + rate429Count + ' times');
+  }
+}
+
+
+// ==========================================================
+// HELPERS
+// ==========================================================
+
+function buildZenserpUrl(keyword, device) {
+  return 'https://app.zenserp.com/api/v2/search?' +
+    'apikey=' + encodeURIComponent(ZEN_CONFIG.apiKey) +
+    '&q=' + encodeURIComponent(keyword) +
+    '&location=' + encodeURIComponent(ZEN_CONFIG.location) +
+    '&hl=' + encodeURIComponent(ZEN_CONFIG.hl) +
+    '&device=' + encodeURIComponent(device);
+}
+
+
+function acquireLockAndWrite(lock, sheet, rows, clear) {
+  var lockAcquired = false;
+  
+  try {
+    lockAcquired = lock.tryLock(ZEN_CONFIG.lockTimeoutMs);
+    
+    if (!lockAcquired) {
+      throw new Error('Could not acquire sheet lock after ' + ZEN_CONFIG.lockTimeoutMs + 'ms');
+    }
+    
+    if (clear) {
+      sheet.clear();
+      if (rows.length > 0) {
+        sheet.appendRow(rows[0]);
+        if (rows.length > 1) {
+          sheet.getRange(2, 1, rows.length - 1, rows[0].length).setValues(rows.slice(1));
+        }
+      }
+    } else {
+      if (rows.length > 0) {
+        var nextRow = sheet.getLastRow() + 1;
+        sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+      }
+    }
+    
+  } finally {
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
+  }
+}
+
+
+function deleteZenserpBatchTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === ZEN_TRIGGER_HANDLER) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+
+function stopZenserpAutomation() {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('zenserpRunning', 'false');
+  props.setProperty('zenserpStoppedReason', 'manual_' + new Date().toISOString());
+  deleteZenserpBatchTriggers();
+  Logger.log('Automation stopped.');
+}
+
+
+function forceResetAndRestart() {
+  var props = PropertiesService.getScriptProperties();
+  
+  Logger.log('================ FORCE RESET ================');
+  
+  props.setProperty('zenserpRunning', 'false');
+  props.deleteProperty('zenserpDevice');
+  props.deleteProperty('zenserpBatchIndex');
+  props.deleteProperty('zenserpStartTime');
+  props.deleteProperty('zenserpRetryCount');
+  
+  deleteZenserpBatchTriggers();
+  
+  Logger.log('✓ State cleared.');
+  Logger.log('Run: startZenserpAutomation() to restart');
+  Logger.log('Or wait for next scheduled run at ' + ZEN_CONFIG.fullAutomationHour + ':00');
+}
+
+
+function forceResetAndStartNow() {
+  forceResetAndRestart();
+  Logger.log('Starting fresh automation now...');
+  startZenserpAutomation();
+}
+
+
+function checkAllZenserpStatus() {
+  var props = PropertiesService.getScriptProperties();
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  
+  Logger.log('================ ZENSERP AUTOMATION STATUS ================');
+  Logger.log('Current time: ' + new Date().toISOString());
+  Logger.log('');
+  
+  Logger.log('--- CONFIGURATION ---');
+  Logger.log('Batch size: 50 keywords (timeout-safe)');
+  Logger.log('Sleep per keyword: ' + ZEN_CONFIG.delayMs + 'ms');
+  Logger.log('Max execution time: ' + (ZEN_CONFIG.maxExecutionTimeMs / 1000).toFixed(0) + 's (6-min limit is 360s)');
+  Logger.log('');
+  
+  Logger.log('--- SCHEDULED TRIGGERS ---');
+  var triggers = ScriptApp.getProjectTriggers();
+  var dailyTriggers = triggers.filter(function(t) { return t.getHandlerFunction() === ZEN_DAILY_STARTER; });
+  var hpMobileTriggers = triggers.filter(function(t) { return t.getHandlerFunction() === ZEN_HIGH_PRIORITY_HANDLER_MOBILE; });
+  var hpDesktopTriggers = triggers.filter(function(t) { return t.getHandlerFunction() === ZEN_HIGH_PRIORITY_HANDLER_DESKTOP; });
+  var batchTriggers = triggers.filter(function(t) { return t.getHandlerFunction() === ZEN_TRIGGER_HANDLER; });
+  
+  Logger.log('Daily full automation: ' + dailyTriggers.length + ' (at ' + ZEN_CONFIG.fullAutomationHour + ':00)');
+  Logger.log('High-priority mobile: ' + hpMobileTriggers.length + ' (at ' + ZEN_CONFIG.highPriorityHours.join(':00, ') + ':00)');
+  Logger.log('High-priority desktop: ' + hpDesktopTriggers.length + ' (offset +5min)');
+  Logger.log('Active batch triggers: ' + batchTriggers.length);
+  Logger.log('');
+  
+  Logger.log('--- HIGH-PRIORITY RUNS TODAY ---');
+  var mobileRunCount = props.getProperty('highPriorityMobileRunCount_' + todayStr) || '0';
+  var desktopRunCount = props.getProperty('highPriorityDesktopRunCount_' + todayStr) || '0';
+  Logger.log('Mobile: ' + mobileRunCount + '/' + ZEN_CONFIG.highPriorityHours.length);
+  Logger.log('Desktop: ' + desktopRunCount + '/' + ZEN_CONFIG.highPriorityHours.length);
+  Logger.log('');
+  
+  Logger.log('--- FULL AUTOMATION ---');
+  var running = props.getProperty('zenserpRunning') === 'true';
+  Logger.log('Currently running: ' + (running ? 'YES' : 'NO'));
+  
+  if (running) {
+    var device = props.getProperty('zenserpDevice');
+    var batchIdx = parseInt(props.getProperty('zenserpBatchIndex') || '0', 10);
+    var startTime = props.getProperty('zenserpStartTime');
+    
+    Logger.log('Progress: ' + device + ' batch ' + (batchIdx + 1) + '/' + ZEN_BATCH_CONFIG.mobile.length);
+    
+    if (startTime) {
+      var hoursElapsed = ((new Date() - new Date(startTime)) / (1000 * 60 * 60)).toFixed(1);
+      Logger.log('Running for: ' + hoursElapsed + ' hours');
+    }
+  }
+  
+  var lastCompleted = props.getProperty('zenserpCompletedAt');
+  if (lastCompleted) Logger.log('Last completed: ' + lastCompleted);
+  
+  Logger.log('');
+  Logger.log('==========================================================');
+}
+
+
+function isAutomationHealthy() {
+  var triggers = ScriptApp.getProjectTriggers();
+  
+  var hasDailyTrigger = triggers.some(function(t) { return t.getHandlerFunction() === ZEN_DAILY_STARTER; });
+  var hasMobileTriggers = triggers.some(function(t) { return t.getHandlerFunction() === ZEN_HIGH_PRIORITY_HANDLER_MOBILE; });
+  var hasDesktopTriggers = triggers.some(function(t) { return t.getHandlerFunction() === ZEN_HIGH_PRIORITY_HANDLER_DESKTOP; });
+  
+  var healthy = hasDailyTrigger && hasMobileTriggers && hasDesktopTriggers;
+  
+  Logger.log('Health check: ' + (healthy ? '✓ HEALTHY' : '✗ ISSUES'));
+  if (!hasDailyTrigger) Logger.log('  - Missing daily trigger');
+  if (!hasMobileTriggers) Logger.log('  - Missing mobile triggers');
+  if (!hasDesktopTriggers) Logger.log('  - Missing desktop triggers');
+  
+  return healthy;
+}

@@ -1,0 +1,205 @@
+/***** CONFIG *****/
+const SPREADSHEET_URL   = 'https://docs.google.com/spreadsheets/d/1JdoN27XuTbbUUuEs0wE2SEed-puRW9hGfQ8KKzeQeCQ/edit';
+const KEYWORDS_SHEET    = 'GSC Filtered Data';            // your list (col A)
+const OUTPUT_SHEET      = 'Ads Keyword Metrics';          // destination tab
+const KEYWORD_COL       = 1;                              // column A
+const DATE_RANGE        = 'LAST_30_DAYS';                 // or LAST_7_DAYS, THIS_MONTH, etc.
+
+/***** FILTER BY SEARCH VOLUME *****/
+// Only include keywords with search volume BELOW this number
+const MAX_SEARCH_VOLUME = 200000;
+
+/***** DEFAULT METRICS WHEN BLANK (decimals, not %) *****/
+const DEFAULT_SEARCH_IMPR_SHARE = 0.75;   // 75%
+const DEFAULT_CTR               = 0.27;   // 27%
+const DEFAULT_AVG_CPC           = 0.06;   // 0.06 currency units
+
+/***** UTIL *****/
+function parsePct(p) { // "15.34%" -> 0.1534
+  if (p == null || p === '' ) return '';
+  var s = ('' + p).trim().replace('%','');
+  var n = parseFloat(s);
+  return isNaN(n) ? '' : n / 100;
+}
+
+function coalesceMetric(value, fallback) {
+  // Treat empty / null / undefined / NaN / 0 as "blank" and use fallback
+  if (
+    value === '' ||
+    value === null ||
+    typeof value === 'undefined' ||
+    isNaN(value) ||
+    value === 0
+  ) {
+    return fallback;
+  }
+  return value;
+}
+
+function main() {
+  // Open sheets
+  var ss = SpreadsheetApp.openByUrl(SPREADSHEET_URL);
+  var kwSheet = ss.getSheetByName(KEYWORDS_SHEET) || ss.getSheets()[0];
+  var svSheet = ss.getSheetByName('SearchVolume');
+  var manualSheet = ss.getSheetByName('Manual Keywords');
+  var out = ss.getSheetByName(OUTPUT_SHEET) || ss.insertSheet(OUTPUT_SHEET);
+
+  /***** 1) BASE KEYWORDS FROM GSC FILTERED DATA *****/
+  var last = kwSheet.getLastRow();
+  if (last < 2) { 
+    Logger.log('No keywords found in ' + KEYWORDS_SHEET + '.'); 
+    return; 
+  }
+
+  var kwVals = kwSheet.getRange(2, KEYWORD_COL, last - 1, 1)
+    .getValues()
+    .map(function(r) { return (r[0] || '').toString().trim(); })
+    .filter(function(x) { return x !== ''; });
+
+  var want = new Set(kwVals.map(function(k) { return k.toLowerCase(); }));
+
+  /***** 2) ADD MANUAL KEYWORDS (FROM TAB "Manual Keywords") *****/
+  if (manualSheet) {
+    var mLast = manualSheet.getLastRow();
+    if (mLast >= 2) {
+      var mVals = manualSheet.getRange(2, 1, mLast - 1, 1)
+        .getValues()
+        .map(function(r) { return (r[0] || '').toString().trim(); })
+        .filter(function(x) { return x !== ''; });
+
+      mVals.forEach(function(k) {
+        var lower = k.toLowerCase();
+        if (!want.has(lower)) {
+          kwVals.push(k);   // add to keyword list
+          want.add(lower);  // track in the set so we don't duplicate
+        }
+      });
+
+      Logger.log('Added ' + mVals.length + ' manual keywords (unique total: ' + kwVals.length + ').');
+    } else {
+      Logger.log('Manual Keywords sheet is present but empty.');
+    }
+  } else {
+    Logger.log('Manual Keywords sheet not found.');
+  }
+
+  /***** 3) READ SEARCH VOLUME DATA *****/
+  var svByKw = {};
+  if (svSheet) {
+    var svLast = svSheet.getLastRow();
+    if (svLast >= 2) {
+      var svData = svSheet.getRange(2, 1, svLast - 1, 2).getValues();
+      for (var i = 0; i < svData.length; i++) {
+        var kw = (svData[i][0] || '').toString().trim();
+        var vol = svData[i][1];
+        if (kw) {
+          svByKw[kw.toLowerCase()] = vol;
+        }
+      }
+    }
+  }
+
+  /***** 4) CAMPAIGN IMPRESSION SHARE *****/
+  var campReport = AdsApp.report(
+    'SELECT CampaignName, SearchImpressionShare ' +
+    'FROM CAMPAIGN_PERFORMANCE_REPORT ' +
+    'DURING ' + DATE_RANGE
+  );
+
+  var campImprShare = {};
+  var campRows = campReport.rows();
+  while (campRows.hasNext()) {
+    var cr = campRows.next();
+    var campName = (cr['CampaignName'] || '').toString().trim();
+    if (campName) {
+      var sis = parsePct(cr['SearchImpressionShare']);
+      campImprShare[campName.toLowerCase()] = sis;
+    }
+  }
+
+  /***** 5) KEYWORD PERFORMANCE FROM GOOGLE ADS *****/
+  var report = AdsApp.report(
+    'SELECT Criteria, CampaignName, Ctr, AverageCpc ' +
+    'FROM KEYWORDS_PERFORMANCE_REPORT ' +
+    'DURING ' + DATE_RANGE
+  );
+
+  var byKw = {};
+  var rows = report.rows();
+  var foundKeywords = [];
+  while (rows.hasNext()) {
+    var r = rows.next();
+    var kw = (r['Criteria'] || '').toString().trim();
+    if (!kw) continue;
+
+    // Strip match type markers: [exact], "phrase", +broad+match+modifiers
+    var cleanKw = kw.replace(/[\[\]\"]/g, '').replace(/\+/g, ' ').trim();
+    var key = cleanKw.toLowerCase();
+    foundKeywords.push(kw);
+
+    if (!want.has(key)) continue;  // only care about our list
+
+    var ctr = parsePct(r['Ctr']);
+    var cpc = r['AverageCpc'] === '' ? '' : Number(r['AverageCpc']);
+
+    var campName = (r['CampaignName'] || '').toString().trim();
+    var sis = campImprShare[campName.toLowerCase()];
+    if (typeof sis === 'undefined') sis = '';
+
+    // keep last (or you could aggregate)
+    byKw[key] = [cleanKw, sis, ctr, cpc, new Date()];
+  }
+  Logger.log('Found ' + foundKeywords.length + ' keywords in report');
+  Logger.log('Total keywords we care about (GSC + manual): ' + kwVals.length);
+  Logger.log('Matched in Ads report: ' + JSON.stringify(Object.keys(byKw)));
+
+  /***** 6) BUILD OUTPUT ROWS (APPLYING VOLUME FILTER + DEFAULTS) *****/
+  var outRows = [];
+  for (var i = 0; i < kwVals.length; i++) {
+    var k = kwVals[i];
+    var key = k.toLowerCase();
+    var rec = byKw[key];
+    var sv = svByKw[key] || '';
+
+    // Filter by search volume: skip high-volume (e.g. branded) terms
+    if (sv !== '' && Number(sv) >= MAX_SEARCH_VOLUME) {
+      continue;
+    }
+
+    // Start with defaults
+    var keywordText = k;
+    var sis = DEFAULT_SEARCH_IMPR_SHARE;
+    var ctr = DEFAULT_CTR;
+    var cpc = DEFAULT_AVG_CPC;
+    var pulledAt = new Date();
+
+    if (rec) {
+      keywordText = rec[0] || k;
+      sis = coalesceMetric(rec[1], DEFAULT_SEARCH_IMPR_SHARE);
+      ctr = coalesceMetric(rec[2], DEFAULT_CTR);
+      cpc = coalesceMetric(rec[3], DEFAULT_AVG_CPC);
+      pulledAt = rec[4] || new Date();
+    }
+
+    // Calculate reinvestment: Monthly Search Vol. * Average CPC * Impression Share * CTR
+    var reinvestment = '';
+    if (sv !== '' && sis !== '' && ctr !== '' && cpc !== '') {
+      reinvestment = sv * cpc * sis * ctr;
+    }
+
+    outRows.push([keywordText, sv, sis, ctr, cpc, reinvestment, pulledAt]);
+  }
+
+  /***** 7) WRITE OUTPUT SHEET *****/
+  out.clear();
+  out.getRange(1, 1, 1, 7).setValues([[
+    'Keyword','Avg. Search Vol.','Search Impr. Share','CTR','Avg CPC','Reinvestment','Pulled At'
+  ]]);
+  if (outRows.length) {
+    out.getRange(2, 1, outRows.length, 7).setValues(outRows);
+  }
+  out.setFrozenRows(1);
+  out.autoResizeColumns(1, 7);
+
+  Logger.log('Wrote ' + outRows.length + ' rows to "' + OUTPUT_SHEET + '".');
+}

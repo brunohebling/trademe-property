@@ -17,19 +17,22 @@ function fetchSearchVolume() {
     'Content-Type' : 'application/json'
   };
 
-  // All keywords from GSC Filtered Data, col A, from row 2 down
-  const lastRow = kwSheet.getLastRow();
-  if (lastRow < 2) {
-    Logger.log('No keywords found in GSC Filtered Data.');
+  // All keywords from GSC Filtered Data and Manual Keywords, col A, from row 2 down
+  const readKeywords = sh => {
+    const last = sh ? sh.getLastRow() : 0;
+    return last < 2 ? [] : sh.getRange(2, 1, last - 1, 1).getValues().flat();
+  };
+  const sourceKeywords = readKeywords(kwSheet).concat(readKeywords(ss.getSheetByName('Manual Keywords')));
+  if (!sourceKeywords.length) {
+    Logger.log('No keywords found in GSC Filtered Data or Manual Keywords.');
     return;
   }
+  const seen = {};
 
-const allKeywords = kwSheet
-    .getRange(2, 1, lastRow - 1, 1)
-    .getValues()
-    .flat()
+const allKeywords = sourceKeywords
     .map(k => (k || '').toString().trim())
     .filter(k => k !== '')
+    .filter(k => { const key = k.toLowerCase(); if (seen[key]) return false; seen[key] = true; return true; })
   .filter(k => !k.includes(',') && !k.includes('[') && !k.includes(']') && !k.includes('|') && !k.includes('"'))
 .filter(k => k.split(' ').length <= 9)
 

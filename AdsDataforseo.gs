@@ -11,7 +11,8 @@
  *                  -> AdsResultsDFSMobile_HighPriority / AdsResultsDFSDesktop_HighPriority
  *
  *   - DataForSEO SERP live/advanced, Auckland; every 'paid' item is one row, tagged top_ads / bottom_ads
- *   - each keyword is looked at samplesPerKeyword (3) times per device, a few seconds apart,
+ *   - each keyword is looked at the job's samplesPerKeyword times per device (full run 1,
+ *     high-priority run 3), a few seconds apart,
  *     because Google does not show ads on every page load. An ad seen in ANY look is written;
  *     'No Ads Found' only when every look succeeded and none had ads
  *   - same 8 columns and the same 'No Ads Found' / 'Network Error' / 'HTTP xxx' /
@@ -51,6 +52,7 @@ var ADS_DFS = {
       lastRow      : 3001,        // stops earlier if the sheet has fewer keywords (2,064 on 1 Oct 2026)
       hours        : [1],         // 1am (script time zone)
       batchSize    : 75,          // 3 groups of 25 per step
+      samplesPerKeyword: 1,       // looks per keyword per device
       parallelRequests: 25,       // ~2,000 keywords need this to finish in ~4-5 hours
       // Combined Data reads these tabs
       outputSheets : { mobile: 'AdsResultsDFSMobile', desktop: 'AdsResultsDFSDesktop' }
@@ -61,6 +63,7 @@ var ADS_DFS = {
       lastRow      : 101,
       hours        : [12, 20],    // 12pm and 8pm (script time zone)
       batchSize    : 25,
+      samplesPerKeyword: 3,       // ads rotate between page loads, so the priority keywords get 3 looks
       parallelRequests: 5,        // 25 + 5 stays within DataForSEO's 30 simultaneous calls
       // Combined Data reads these tabs first, then the full-run tabs
       outputSheets : { mobile: 'AdsResultsDFSMobile_HighPriority', desktop: 'AdsResultsDFSDesktop_HighPriority' }
@@ -69,7 +72,6 @@ var ADS_DFS = {
 
   // batchSize and parallelRequests are set per job above. One call takes ~8s on average
   // (up to ~16s); 25 calls at once take ~25-35s. DataForSEO allows 30 simultaneous calls.
-  samplesPerKeyword: 3,         // looks per keyword per device; ads rotate between page loads
   liveUrl        : 'https://api.dataforseo.com/v3/serp/google/organic/live/advanced',
   locationCode   : 1011036,     // Auckland, New Zealand
   languageCode   : 'en',
@@ -177,10 +179,10 @@ function adsDfsCostEstimate() {
   Object.keys(ADS_DFS.jobs).forEach(function (job) {
     var cfg = ADS_DFS.jobs[job];
     var keywords = Math.max(0, Math.min(cfg.lastRow, adsDfsLastRow_(sheet, cfg.firstRow)) - cfg.firstRow + 1);
-    var calls = keywords * 2 * ADS_DFS.samplesPerKeyword;
+    var calls = keywords * 2 * cfg.samplesPerKeyword;
     var perRun = calls * ADS_DFS.costPerLiveCallUsd;
     perDay += perRun * cfg.hours.length;
-    console.log(cfg.label + ': ' + keywords + ' keywords × 2 devices × ' + ADS_DFS.samplesPerKeyword +
+    console.log(cfg.label + ': ' + keywords + ' keywords × 2 devices × ' + cfg.samplesPerKeyword +
                ' looks = ' + calls + ' calls, $' + perRun.toFixed(2) + ' per run × ' + cfg.hours.length + ' run(s)/day');
   });
   console.log('Total per day: $' + perDay.toFixed(2));
@@ -520,7 +522,8 @@ function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, exec
   while (pos < keywords.length) {
     var chunk = keywords.slice(pos, pos + Math.max(1, ADS_DFS.jobs[job].parallelRequests));
     // The first group of every step always finishes, so a very slow API can't stall the run
-    var rows = adsDfsFetchChunk_(chunk, device, headers, clock, firstInStep && pos === offset);
+    var rows = adsDfsFetchChunk_(chunk, device, headers, clock, firstInStep && pos === offset,
+                                 ADS_DFS.jobs[job].samplesPerKeyword);
     if (rows === null) {
       // Out of time part-way through this group: nothing written, the group is redone next step
       console.log('⏱ Time limit reached at keyword ' + pos + '/' + keywords.length + '. Continuing in the next step.');
@@ -540,15 +543,15 @@ function getAdsDfsBatch_(job, device, startRow, endRow, clearSheet, offset, exec
 }
 
 /**
- * Looks at each keyword in the chunk samplesPerKeyword times (the looks for one keyword are
+ * Looks at each keyword in the chunk `samples` times (the looks for one keyword are
  * sequential, a few seconds apart) and returns the combined sheet rows.
  * If there isn't time left in this step it returns null and the group is redone in the next
  * step - unless mustFinish is set (first group of a step, so every step makes progress), in
  * which case looks that couldn't run count as failed looks and can never become 'No Ads Found'.
  */
-function adsDfsFetchChunk_(chunk, device, headers, clock, mustFinish) {
+function adsDfsFetchChunk_(chunk, device, headers, clock, mustFinish, samples) {
   var looks = chunk.map(function () { return []; });
-  for (var n = 0; n < ADS_DFS.samplesPerKeyword; n++) {
+  for (var n = 0; n < samples; n++) {
     var once = adsDfsFetchOnce_(chunk, device, headers, clock, mustFinish);
     if (once === null) {
       if (!mustFinish) return null;
@@ -678,7 +681,7 @@ function adsDfsRequest_(keyword, device, headers) {
 }
 
 /**
- * Diagnostic: looks at ADS_DFS.testKeyword exactly as a run would (samplesPerKeyword looks per
+ * Diagnostic: looks at ADS_DFS.testKeyword exactly as a run would (the high-priority job's samplesPerKeyword looks per
  * device), logs what DataForSEO returned for each look, then the rows that would be written.
  * Writes nothing.
  */
@@ -688,7 +691,7 @@ function testAdsDfsKeyword() {
   console.log('Keyword: "' + kw + '" | location_code ' + ADS_DFS.locationCode);
   ['mobile', 'desktop'].forEach(function (device) {
     var looks = [];
-    for (var n = 1; n <= ADS_DFS.samplesPerKeyword; n++) {
+    for (var n = 1; n <= ADS_DFS.jobs.priority.samplesPerKeyword; n++) {
       var resp = UrlFetchApp.fetchAll([adsDfsRequest_(kw, device, headers)])[0];
       var body = resp.getContentText();
       var info = '';

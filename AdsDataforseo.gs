@@ -7,12 +7,12 @@
  *
  *   FULL RUN       every keyword in 'Final keywords', mobile + desktop, daily at 1am
  *                  -> AdsResultsDFSMobile / AdsResultsDFSDesktop
- *   HIGH-PRIORITY  rows 2-101 of 'Final keywords', mobile + desktop, daily at 12pm and 8pm
+ *   HIGH-PRIORITY  rows 2-201 of 'Final keywords', mobile + desktop, daily at 12pm and 8pm
  *                  -> AdsResultsDFSMobile_HighPriority / AdsResultsDFSDesktop_HighPriority
  *
  *   - DataForSEO SERP live/advanced, Auckland; every 'paid' item is one row, tagged top_ads / bottom_ads
  *   - each keyword is looked at the job's samplesPerKeyword times per device (full run 1,
- *     high-priority run 3), a few seconds apart,
+ *     high-priority run 2), a few seconds apart,
  *     because Google does not show ads on every page load. An ad seen in ANY look is written;
  *     'No Ads Found' only when every look succeeded and none had ads
  *   - same 8 columns and the same 'No Ads Found' / 'Network Error' / 'HTTP xxx' /
@@ -60,10 +60,10 @@ var ADS_DFS = {
     priority: {
       label        : 'High-priority run',
       firstRow     : 2,
-      lastRow      : 101,
+      lastRow      : 201,
       hours        : [12, 20],    // 12pm and 8pm (script time zone)
       batchSize    : 25,
-      samplesPerKeyword: 3,       // ads rotate between page loads, so the priority keywords get 3 looks
+      samplesPerKeyword: 2,       // ads rotate between page loads, so the priority keywords get 2 looks
       parallelRequests: 5,        // 25 + 5 stays within DataForSEO's 30 simultaneous calls
       // Combined Data reads these tabs first, then the full-run tabs
       outputSheets : { mobile: 'AdsResultsDFSMobile_HighPriority', desktop: 'AdsResultsDFSDesktop_HighPriority' }
@@ -814,7 +814,7 @@ function compareAdsParity() {
                  { mobile: 'AdsResultsZenMobile', desktop: 'AdsResultsZenDesktop' });
 }
 
-/** High-priority run: compares the _HighPriority tabs for rows 2-101. */
+/** High-priority run: compares the _HighPriority tabs for rows 2-201. */
 function compareAdsParityPriority() {
   adsDfsCompare_('priority', 'Parity Check HighPriority',
                  { mobile: 'AdsResultsZenMobile_HighPriority', desktop: 'AdsResultsZenDesktop_HighPriority' });
